@@ -1237,7 +1237,7 @@ impl<T: Trait> Module<T> {
         }
     }
 
-    fn add_new_thread(
+    pub fn add_new_thread(
         category_id: CategoryId,
         title: &Vec<u8>,
         author_id: &T::AccountId,
@@ -1278,7 +1278,7 @@ impl<T: Trait> Module<T> {
 
     /// Creates and ads a new post ot the given thread, and makes all required state updates
     /// `thread_id` must be valid
-    fn add_new_post(
+    pub fn add_new_post(
         thread_id: ThreadId,
         text: &Vec<u8>,
         author_id: &T::AccountId,
@@ -1314,5 +1314,81 @@ impl<T: Trait> Module<T> {
         });
 
         new_post
+    }
+
+    /// Add a new category.
+    pub fn add_category(
+        moderator_id: T::AccountId,
+        parent: Option<CategoryId>,
+        title: Vec<u8>,
+        description: Vec<u8>,
+    ) -> dispatch::Result {
+        // Validate title
+        Self::ensure_category_title_is_valid(&title)?;
+
+        // Validate description
+        Self::ensure_category_description_is_valid(&description)?;
+
+        // Position in parent field value for new category
+        let mut position_in_parent_category_field = None;
+
+        // If not root, then check that we can create in parent category
+        if let Some(parent_category_id) = parent {
+            let category_tree_path =
+                Self::ensure_valid_category_and_build_category_tree_path(parent_category_id)?;
+
+            // Can we mutate in this category?
+            Self::ensure_can_add_subcategory_path_leaf(&category_tree_path)?;
+
+            /*
+             * Here we are safe to mutate
+             */
+
+            // Increment number of subcategories to reflect this new category being
+            // added as a child
+            <CategoryById<T>>::mutate(parent_category_id, |c| {
+                c.num_direct_subcategories += 1;
+            });
+
+            // Set `position_in_parent_category_field`
+            let parent_category = category_tree_path.first().unwrap();
+
+            position_in_parent_category_field = Some(ChildPositionInParentCategory {
+                parent_id: parent_category_id,
+                child_nr_in_parent_category: parent_category.num_direct_subcategories,
+            });
+        }
+
+        /*
+         * Here we are safe to mutate
+         */
+
+        let next_category_id = NextCategoryId::get();
+
+        // Create new category
+        let new_category = Category {
+            id: next_category_id,
+            title: title.clone(),
+            description: description.clone(),
+            created_at: Self::current_block_and_time(),
+            deleted: false,
+            archived: false,
+            num_direct_subcategories: 0,
+            num_direct_unmoderated_threads: 0,
+            num_direct_moderated_threads: 0,
+            position_in_parent_category: position_in_parent_category_field,
+            moderator_id: moderator_id,
+        };
+
+        // Insert category in map
+        <CategoryById<T>>::insert(new_category.id, new_category);
+
+        // Update other things
+        NextCategoryId::put(next_category_id + 1);
+
+        // Generate event
+        Self::deposit_event(RawEvent::CategoryCreated(next_category_id));
+
+        Ok(())
     }
 }
